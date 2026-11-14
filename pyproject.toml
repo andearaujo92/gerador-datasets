@@ -1,0 +1,21 @@
+[project]
+name = "gerador-dados"
+version = "0.1.0"
+description = "Gerador de datasets sinteticos para machine learning"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "scipy>=1.11",
+    "streamlit>=1.30",
+    "pyarrow>=14",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = ["ignore::DeprecationWarning"]
