@@ -116,5 +116,5 @@ def dicionario_md(config: DatasetConfig) -> str:
                 seta = "+" if inf.direcao >= 0 else "-"
                 linhas.append(f"- {seta} `{inf.variavel}` forca {inf.forca:.2f}")
 
-    linhas += ["", "---", "*Gerado por gerador-dados.*", ""]
+    linhas += ["", "---", "*Gerado por gerador-datasets.*", ""]
     return "\n".join(linhas)

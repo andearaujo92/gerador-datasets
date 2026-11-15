@@ -1,4 +1,4 @@
-# Plano de Implementação — gerador-dados
+# Plano de Implementação — gerador-datasets
 
 App Streamlit para construir datasets sintéticos para machine learning: o usuário define
 um schema de variáveis (tipo, distribuição, parâmetros, escala, nulos), relações de
@@ -76,7 +76,7 @@ Fechadas. Agentes downstream não devem reabri-las.
 ## 3. Estrutura de arquivos
 
 ```
-gerador-dados/
+gerador-datasets/
 ├── app.py                        # entrypoint Streamlit (só composição)
 ├── pyproject.toml
 ├── README.md

@@ -1,4 +1,4 @@
-# gerador-dados
+# gerador-datasets
 
 App Streamlit para construir **datasets sintéticos para machine learning**: você define
 cada variável (tipo, distribuição, parâmetros, escala, nulos, outliers), as correlações
@@ -15,7 +15,7 @@ dados e reprodutível por seed.
 Abre em `http://localhost:8501`.
 
 ```bash
-.venv/bin/python -m pytest -q      # 147 testes
+.venv/bin/python -m pytest -q      # 148 testes
 ```
 
 ## Modelos prontos
@@ -148,7 +148,7 @@ gerador/
   io/                   # export (csv/parquet/xlsx + dicionário) e schema JSON
   presets/              # modelos prontos (crédito mensal)
 ui/                     # state, sidebar, variable_card, relations, target_card, diagnostics
-tests/                  # 147 testes (schema, marginais, cópula, alvo, painel, presets, app)
+tests/                  # 148 testes (schema, marginais, cópula, alvo, painel, presets, app)
 docs/BASE-CREDITO.md    # documentação do preset de crédito mensal
 docs/PLANO-TECNICO.md   # plano de implementação
 ```
@@ -171,3 +171,10 @@ Decididos durante a execução, por risco de dependência:
 - correlação condicional por grupo;
 - alvo de sobrevivência (time-to-event);
 - geração incremental para > 1M linhas.
+
+## Licença
+
+Distribuído sob a licença **MIT** — veja [LICENSE](LICENSE). Você pode usar, copiar,
+modificar, publicar, distribuir, sublicenciar e vender cópias, inclusive em projetos
+comerciais e fechados, desde que o aviso de copyright e a licença sejam mantidos. Fork é
+bem-vindo.
