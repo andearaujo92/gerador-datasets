@@ -9,8 +9,12 @@ from gerador.schema.types import DType
 
 
 def _correlacionaveis(config) -> list[str]:
-    """Variaveis que participam da copula (texto/ID fica de fora)."""
-    return [v.nome for v in config.variaveis if v.dtype != DType.TEXTO.value]
+    """Variaveis que participam da copula (texto/ID e derivadas ficam de fora)."""
+    return [
+        v.nome
+        for v in config.variaveis
+        if v.dtype not in (DType.TEXTO.value, DType.DERIVADA.value)
+    ]
 
 
 def render(config) -> None:
@@ -23,7 +27,10 @@ def render(config) -> None:
 
     nomes = _correlacionaveis(config)
     if len(config.nomes) > len(nomes):
-        st.caption("Variaveis de texto (ID) ficam fora: sao chaves, nao features.")
+        st.caption(
+            "Variaveis de texto (ID) e derivadas ficam fora: IDs sao chaves e a "
+            "correlacao das derivadas vem da formula."
+        )
     if len(nomes) < 2:
         st.info("Adicione ao menos duas variaveis numericas/categoricas para correlacionar.")
         return
@@ -93,6 +100,16 @@ def render(config) -> None:
                     "Variaveis discretas e categoricas atenuam a correlacao realizada "
                     "(empates). A calibracao ajusta a matriz para compensar e repete "
                     "ate a tolerancia."
+                ),
+            )
+            config.relacoes.completar_psd = st.checkbox(
+                "Completar matriz automaticamente",
+                value=bool(config.relacoes.completar_psd),
+                key="gd.completar_psd",
+                help=(
+                    "Quando as correlacoes informadas nao fecham sozinhas, os pares "
+                    "nao declarados sao preenchidos com o valor que torna a matriz "
+                    "valida, em vez de recusar a geracao."
                 ),
             )
         with direita:

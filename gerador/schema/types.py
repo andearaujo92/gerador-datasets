@@ -18,6 +18,7 @@ class DType(str, Enum):
     BOOLEANA = "booleana"
     DATA_HORA = "data_hora"
     TEXTO = "texto"
+    DERIVADA = "derivada"
 
 
 class Distribuicao(str, Enum):
@@ -118,6 +119,23 @@ DISTRIBUICOES_POR_TIPO: dict[DType, list[Distribuicao]] = {
     DType.BOOLEANA: [Distribuicao.BERNOULLI],
     DType.DATA_HORA: [Distribuicao.INTERVALO_DATAS],
     DType.TEXTO: [Distribuicao.ID],
+    #: Derivadas nao tem distribuicao: o valor vem de uma expressao.
+    DType.DERIVADA: [],
+}
+
+
+class ModoEvolucao(str, Enum):
+    """Como a variavel se comporta ao longo dos meses do painel."""
+
+    ESTATICA = "estatica"
+    AR1 = "ar1"
+    TENDENCIA = "tendencia"
+
+
+ROTULOS_EVOLUCAO = {
+    ModoEvolucao.ESTATICA: "Constante nos meses",
+    ModoEvolucao.AR1: "Persistente (autocorrelacao)",
+    ModoEvolucao.TENDENCIA: "Cresce a cada mes",
 }
 
 #: Parametros default de cada distribuicao. Copia rasa usada ao trocar de tipo.
@@ -184,6 +202,7 @@ ROTULOS_DTYPE = {
     DType.BOOLEANA: "Booleana",
     DType.DATA_HORA: "Data / hora",
     DType.TEXTO: "Texto (ID)",
+    DType.DERIVADA: "Derivada (expressao)",
 }
 
 ROTULOS_DISTRIBUICAO = {

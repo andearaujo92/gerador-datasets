@@ -78,3 +78,36 @@ def test_adicionar_variavel_e_relacao():
     at.button(key="gd.add_rel").click().run()
     assert not at.exception
     assert len(at.session_state["gd_config"].relacoes.lista) == relacoes_antes + 1
+
+
+def test_carregar_preset_de_credito_mensal():
+    at = _abrir()
+    at.button(key="gd.carregar_preset").click().run()
+    assert not at.exception
+
+    config = at.session_state["gd_config"]
+    assert config.painel.habilitado
+    assert config.n_linhas == 6000
+    assert len(config.variaveis) == 22
+    assert config.target.habilitado is False
+    assert any(v.dtype == "derivada" for v in config.variaveis)
+    # controles do painel aparecem na barra lateral
+    assert at.number_input(key="gd.painel_meses").value == 12
+    assert at.checkbox(key="gd.painel_on").value is True
+
+
+def test_preset_gera_painel_sem_target():
+    at = _abrir()
+    at.button(key="gd.carregar_preset").click().run()
+    at.number_input(key="gd.n_linhas").set_value(60).run()
+    at.number_input(key="gd.painel_meses").set_value(3).run()
+    at.button(key="gd.gerar").click().run()
+    assert not at.exception
+
+    res = at.session_state["gd_resultado"]
+    assert res.ok, res.erros
+    assert len(res.df) == 60 * 3
+    assert "data_mes" in res.df.columns
+    assert "id_cliente" in res.df.columns
+    assert all(c not in res.df.columns for c in ("churn", "target"))
+    assert res.df["id_cliente"].nunique() == 60

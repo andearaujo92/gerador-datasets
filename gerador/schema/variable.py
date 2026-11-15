@@ -14,6 +14,7 @@ from gerador.schema.types import (
     Distribuicao,
     MecanismoNulo,
     MetodoOutlier,
+    ModoEvolucao,
     Transformacao,
 )
 
@@ -116,6 +117,33 @@ class Qualidade:
 
 
 @dataclass
+class Evolucao:
+    """Comportamento da variavel ao longo dos meses de um painel.
+
+    Só tem efeito quando `DatasetConfig.painel.habilitado`. Fora do painel a
+    variavel e gerada uma unica vez (cross-section).
+    """
+
+    modo: str = ModoEvolucao.ESTATICA.value
+    #: Persistencia mensal (autocorrelacao lag-1) para o modo `ar1`.
+    phi: float = 0.9
+    #: Incremento por mes para o modo `tendencia`.
+    passo: float = 1.0
+
+    def to_dict(self) -> dict:
+        return {"modo": self.modo, "phi": self.phi, "passo": self.passo}
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "Evolucao":
+        d = d or {}
+        return cls(
+            modo=d.get("modo", ModoEvolucao.ESTATICA.value),
+            phi=float(d.get("phi", 0.9)),
+            passo=float(d.get("passo", 1.0)),
+        )
+
+
+@dataclass
 class VariableConfig:
     nome: str
     dtype: str = DType.CONTINUA.value
@@ -125,6 +153,9 @@ class VariableConfig:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     escala: Escala = field(default_factory=Escala)
     qualidade: Qualidade = field(default_factory=Qualidade)
+    #: Expressao segura usada quando `dtype == derivada`.
+    expressao: str = ""
+    evolucao: Evolucao = field(default_factory=Evolucao)
 
     # -- conveniencias -------------------------------------------------
     @property
@@ -138,6 +169,11 @@ class VariableConfig:
     def resetar_geracao(self) -> None:
         """Ajusta distribuicao e params ao tipo atual (cascata da UI)."""
         permitidas = DISTRIBUICOES_POR_TIPO[self.tipo]
+        if not permitidas:
+            # Tipo derivada: nao usa distribuicao nem params.
+            self.distribuicao = Distribuicao.NORMAL.value
+            self.params = {}
+            return
         if self.dist not in permitidas:
             self.distribuicao = permitidas[0].value
         self.params = copy.deepcopy(PARAMS_DEFAULT[self.dist])
@@ -153,6 +189,8 @@ class VariableConfig:
             "geracao": {"distribuicao": self.distribuicao, "params": copy.deepcopy(self.params)},
             "escala": self.escala.to_dict(),
             "qualidade": self.qualidade.to_dict(),
+            "expressao": self.expressao,
+            "evolucao": self.evolucao.to_dict(),
         }
 
     @classmethod
@@ -167,6 +205,8 @@ class VariableConfig:
             params=copy.deepcopy(ger.get("params") or {}),
             escala=Escala.from_dict(d.get("escala")),
             qualidade=Qualidade.from_dict(d.get("qualidade")),
+            expressao=d.get("expressao", ""),
+            evolucao=Evolucao.from_dict(d.get("evolucao")),
         )
 
 
@@ -285,8 +325,17 @@ def validar_params(var: VariableConfig) -> list[str]:
     return erros
 
 
-def validar_variavel(var: VariableConfig, n_linhas: int = 1000) -> tuple[list[str], list[str]]:
-    """Retorna (erros, avisos) de uma variavel."""
+def validar_variavel(
+    var: VariableConfig,
+    n_linhas: int = 1000,
+    colunas: list[str] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Retorna (erros, avisos) de uma variavel.
+
+    `colunas` (opcional) e a lista de variaveis ja declaradas; serve para
+    validar a expressao de variaveis derivadas e garantir que elas so
+    referenciem colunas anteriores.
+    """
     erros: list[str] = []
     avisos: list[str] = []
     nome = (var.nome or "").strip()
@@ -298,16 +347,36 @@ def validar_variavel(var: VariableConfig, n_linhas: int = 1000) -> tuple[list[st
     elif nome[0].isdigit():
         erros.append(f"'{nome}': nome nao pode comecar com digito")
 
-    if var.dist not in DISTRIBUICOES_POR_TIPO[var.tipo]:
-        erros.append(f"distribuicao '{var.distribuicao}' nao e valida para o tipo '{var.dtype}'")
+    if var.tipo is DType.DERIVADA:
+        expressao = (var.expressao or "").strip()
+        if not expressao:
+            erros.append(f"'{nome}': variavel derivada exige uma expressao")
+        elif colunas is not None:
+            from gerador.expressions import validar_expressao
 
-    erros.extend(validar_params(var))
+            erro = validar_expressao(expressao, colunas)
+            if erro:
+                erros.append(f"'{nome}': expressao invalida: {erro}")
+    else:
+        if var.dist not in DISTRIBUICOES_POR_TIPO[var.tipo]:
+            erros.append(f"distribuicao '{var.distribuicao}' nao e valida para o tipo '{var.dtype}'")
+        erros.extend(validar_params(var))
 
     e = var.escala
     if e.minimo is not None and e.maximo is not None and e.minimo > e.maximo:
         erros.append(f"'{nome}': min maior que max")
     if e.casas_decimais < 0 or e.casas_decimais > 6:
         erros.append(f"'{nome}': casas decimais precisa estar entre 0 e 6")
+
+    ev = var.evolucao
+    if ev.modo not in {m.value for m in ModoEvolucao}:
+        erros.append(f"'{nome}': modo de evolucao invalido")
+    if not 0.0 <= ev.phi <= 0.999:
+        erros.append(f"'{nome}': phi da evolucao precisa estar entre 0 e 0.999")
+    if var.tipo is DType.TEXTO and ev.modo != ModoEvolucao.ESTATICA.value:
+        avisos.append(f"'{nome}': texto nao evolui; a coluna sera repetida em todos os meses")
+    if var.tipo is DType.DERIVADA and ev.modo != ModoEvolucao.ESTATICA.value:
+        avisos.append(f"'{nome}': evolucao e ignorada em variavel derivada")
 
     q = var.qualidade
     if not 0 <= q.nulos.pct <= 100:
@@ -319,10 +388,10 @@ def validar_variavel(var: VariableConfig, n_linhas: int = 1000) -> tuple[list[st
 
     if var.tipo in (DType.DISCRETA, DType.BOOLEANA) and q.outliers.metodo != MetodoOutlier.NENHUM.value:
         avisos.append(f"'{nome}': outliers em variavel discreta/booleana raramente faz sentido")
-    if var.tipo is DType.TEXTO and q.outliers.metodo != MetodoOutlier.NENHUM.value:
-        avisos.append(f"'{nome}': outliers sao ignorados em texto")
+    if var.tipo in (DType.TEXTO, DType.DERIVADA) and q.outliers.metodo != MetodoOutlier.NENHUM.value:
+        avisos.append(f"'{nome}': outliers sao ignorados neste tipo")
 
-    if var.dist in (Distribuicao.NORMAL, Distribuicao.LOG_NORMAL) and var.tipo is DType.DISCRETA:
+    if var.tipo is not DType.DERIVADA and var.dist in (Distribuicao.NORMAL, Distribuicao.LOG_NORMAL) and var.tipo is DType.DISCRETA:
         avisos.append(
             f"'{nome}': {var.dist.value} + contagem gera decimais; sera arredondado e limitado a >= 0"
         )

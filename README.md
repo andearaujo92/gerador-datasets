@@ -15,8 +15,15 @@ dados e reprodutível por seed.
 Abre em `http://localhost:8501`.
 
 ```bash
-.venv/bin/python -m pytest -q      # 107 testes
+.venv/bin/python -m pytest -q      # 147 testes
 ```
+
+## Modelos prontos
+
+A barra lateral traz uma base pronta para começar
+
+Carregar um modelo substitui o schema atual; o JSON salvo continua sendo a forma de
+guardar o seu.
 
 ## O que dá para configurar
 
@@ -31,11 +38,14 @@ Cada variável tem quatro blocos:
 
 Além disso:
 
-- **Relações**: lista de pares com força em Spearman (−1 a 1), com validação da matriz e
-  calibração opcional.
+- **Relações**: lista de pares com força em Spearman (−1 a 1), com validação da matriz,
+  calibração opcional e preenchimento automático dos pares não declarados.
 - **Alvo**: binária, multiclasse, regressão, contagem ou ordinal; modo guiado (features
   influentes) ou modo regra (expressão).
-- **Global**: número de linhas, seed, formato de export, schema JSON salvável/carregável.
+- **Painel temporal** (opcional): uma linha por entidade por mês, com coluna de tempo e
+  evolução por variável (estática, AR1 com persistência φ ou tendência mensal).
+- **Global**: número de linhas (ou clientes, no painel), seed, formato de export, schema
+  JSON salvável/carregável.
 
 ## Tipos e distribuições
 
@@ -48,6 +58,7 @@ Além disso:
 | Booleana | Bernoulli |
 | Data / hora | intervalo de datas com tendência (uniforme, crescente, decrescente, sazonal) |
 | Texto (ID) | sequencial, formatado (prefixo + zeros) ou alfanumérico aleatório — **numpy puro, sem Faker** |
+| Derivada | expressão segura sobre as variáveis declaradas acima (ex.: `(atraso > 0) * valor_a_vencer`) |
 
 ## Como a correlação funciona
 
@@ -56,8 +67,9 @@ qualquer tipo (contínua, contagem, categórica, data). O motor:
 
 1. converte cada força para o coeficiente latente: `R = 2·sin(π·ρ/6)`;
 2. monta a matriz e checa os autovalores;
-3. se a matriz for inválida, projeta para a matriz válida mais próxima (Higham) — a UI
-   avisa qual par é o mais inconsistente;
+3. se a matriz for inválida, você escolhe entre **completar** os pares não informados
+   (matriz válida mais próxima, preservando os pares pedidos) ou projetar para a matriz
+   válida mais próxima (Higham) — a UI avisa qual par é o mais inconsistente;
 4. amostra uma normal multivariada, aplica a CDF normal e passa `u` pela **ppf** de cada
    variável (cópula gaussiana);
 5. opcionalmente **calibra**: variáveis discretas/categóricas atenuam a correlação por
@@ -68,15 +80,39 @@ O diagnóstico sempre mostra **pedido vs. realizado**, com status `ok` (±0,05),
 
 O alvo **não** participa da matriz: ele é derivado das features.
 
+## Painel temporal (dados em formato longo)
+
+Ligando **Painel temporal** na barra lateral, a base passa a ter uma linha por entidade
+por mês (`id_cliente` × `data_mes`), em vez de uma linha por entidade. A coluna de tempo
+é sempre o primeiro dia do mês e a base é balanceada.
+
+Cada variável escolhe como evolui:
+
+| Modo | Significado |
+|---|---|
+| Estática | o mesmo valor em todos os meses (idade, UF, limite) |
+| AR1 | persistência mês a mês com autocorrelação `φ` (renda, scores, atraso) |
+| Tendência | valor inicial + passo fixo por mês (tempo de conta) |
+
+O motor usa `Z = √φ·B + √(1−φ)·W`, em que `B` é o traço permanente da entidade e `W` o
+choque do mês. Isso produz persistência e transições realistas sem congelar a variável.
+A matriz de correlação é compensada por `φ` para valer em cada mês; o diagnóstico confere
+o pedido vs. realizado no primeiro mês e mostra a autocorrelação realizada por variável.
+
+A base entrega **somente o estado em `t`**: sem lags, sem janelas móveis e sem agregados.
+Isso é proposital — evita vazamento de futuro e deixa a engenharia de features com quem
+conhece o problema.
+
 ## Ordem do pipeline
 
 ```
-marginais + cópula → transformar/escalar/arredondar/clipar → target
-→ outliers → nulos → ordenar colunas (target por último) → ajustar dtypes
+marginais + cópula (ou painel entidade × mês) → transformar/escalar/arredondar/clipar
+→ derivadas (ordem de declaração) → target
+→ outliers → nulos → ordenar colunas (data_mes após o id, target por último) → dtypes
 ```
 
 O alvo é gerado antes dos nulos de propósito: ele enxerga as features íntegras, como um
-rótulo real seria construído.
+rótulo real seria construído. No painel, as derivadas são recalculadas mês a mês.
 
 ## Alvo
 
@@ -96,8 +132,8 @@ imports ou builtins). Funções: `log`, `exp`, `sqrt`, `abs`, `clip`, `sin`, `co
 ## Export
 
 - CSV, Parquet ou Excel;
-- dicionário de dados em Markdown (tipo, distribuição, parâmetros, escala, nulos, outliers,
-  descrição e influências do alvo);
+- dicionário de dados em Markdown (tipo, distribuição, parâmetros, escala, evolução,
+  nulos, outliers, descrição, painel e expressões derivadas);
 - schema em JSON — reabre a configuração inteira, inclusive as chaves de widget.
 
 ## Estrutura
@@ -105,13 +141,15 @@ imports ou builtins). Funções: `log`, `exp`, `sqrt`, `abs`, `clip`, `sin`, `co
 ```
 app.py                  # entrypoint (só composição)
 gerador/
-  schema/               # tipos, variável, relações, alvo, dataset + validação
+  schema/               # tipos, variável, relações, alvo, painel, dataset + validação
   engine/               # marginals, copula, transforms, text, target, missing,
-                        # outliers, pipeline, diagnostics
-  expressions.py        # parser seguro de regras
+                        # outliers, painel, pipeline, diagnostics
+  expressions.py        # parser seguro de regras e derivadas
   io/                   # export (csv/parquet/xlsx + dicionário) e schema JSON
+  presets/              # modelos prontos (crédito mensal)
 ui/                     # state, sidebar, variable_card, relations, target_card, diagnostics
-tests/                  # 107 testes (schema, marginais, cópula, alvo, pipeline, app)
+tests/                  # 147 testes (schema, marginais, cópula, alvo, painel, presets, app)
+docs/BASE-CREDITO.md    # documentação do preset de crédito mensal
 docs/PLANO-TECNICO.md   # plano de implementação
 ```
 

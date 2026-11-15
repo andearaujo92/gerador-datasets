@@ -42,6 +42,9 @@ class RelacoesConfig:
     calibrar: bool = False
     tolerancia: float = 0.02
     max_iter: int = 20
+    #: Completa os pares nao informados para obter uma matriz valida, em vez de
+    #: exigir que o usuario feche a matriz na mao.
+    completar_psd: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -49,6 +52,7 @@ class RelacoesConfig:
             "calibrar": self.calibrar,
             "tolerancia": self.tolerancia,
             "max_iter": self.max_iter,
+            "completar_psd": self.completar_psd,
         }
 
     @classmethod
@@ -59,4 +63,5 @@ class RelacoesConfig:
             calibrar=bool(d.get("calibrar", False)),
             tolerancia=float(d.get("tolerancia", 0.02)),
             max_iter=int(d.get("max_iter", 20)),
+            completar_psd=bool(d.get("completar_psd", False)),
         )

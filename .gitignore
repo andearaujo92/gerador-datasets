@@ -7,3 +7,7 @@ __pycache__/
 *.parquet
 *.xlsx
 !tests/fixtures/*.csv
+.docs/
+credito_mensal-dicionario.md
+.planning/
+.markdown-collab/

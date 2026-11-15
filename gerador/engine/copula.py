@@ -26,19 +26,59 @@ def latente_para_spearman(r: float | np.ndarray) -> float | np.ndarray:
 
 
 def matriz_relacoes(
-    nomes: list[str], relacoes: list[Relacao]
+    nomes: list[str], relacoes: list[Relacao], completar: bool = False
 ) -> tuple[np.ndarray, dict[str, int]]:
-    """Monta a matriz latente a partir da lista de relacoes."""
+    """Monta a matriz latente a partir da lista de relacoes.
+
+    Com `completar=True`, os pares que o usuario nao informou deixam de ser
+    zero: sao preenchidos com o valor que torna a matriz valida mais proxima
+    dos pares pedidos. Sem isso, a matriz com zeros pode ser invalida mesmo
+    quando as correlacoes pedidas, isoladamente, fazem sentido.
+    """
     indices = {nome: i for i, nome in enumerate(nomes)}
     k = len(nomes)
     R = np.eye(k)
+    fixos = np.zeros((k, k), dtype=bool)
     for rel in relacoes:
         if rel.a not in indices or rel.b not in indices or rel.a == rel.b:
             continue
         i, j = indices[rel.a], indices[rel.b]
         valor = float(np.clip(spearman_para_latente(rel.forca), -1.0, 1.0))
         R[i, j] = R[j, i] = valor
+        fixos[i, j] = fixos[j, i] = True
+    if completar and k >= 3 and fixos.any():
+        R = completar_psd(R, fixos)
     return R, indices
+
+
+def completar_psd(
+    R: np.ndarray, fixos: np.ndarray, max_iter: int = 2000, tol: float = 1e-10
+) -> np.ndarray:
+    """Completa a matriz mantendo fixos os pares informados (projecoes alternadas).
+
+    Cada passo projeta para o cone PSD e repoe os pares pedidos. Se a
+    convergencia nao chegar perto o bastante, uma ultima projecao garante uma
+    matriz amostravel (com desvio desprezivel nos pares pedidos).
+    """
+    R = np.array(R, dtype=float)
+    fixos = np.asarray(fixos, dtype=bool).copy()
+    fixos = fixos | fixos.T
+    np.fill_diagonal(fixos, False)
+    alvo = R[fixos].copy()
+
+    for _ in range(int(max_iter)):
+        novo = projetar_psd(R)
+        novo[fixos] = alvo
+        np.fill_diagonal(novo, 1.0)
+        mudanca = float(np.abs(novo - R).max())
+        R = novo
+        if mudanca < tol:
+            break
+
+    ok, _ = validar_psd(R)
+    if not ok:
+        R = projetar_psd(R)
+    return R
 
 
 def validar_psd(R: np.ndarray, tol: float = 1e-8) -> tuple[bool, float]:
@@ -76,8 +116,8 @@ def spearman(a: np.ndarray, b: np.ndarray) -> float:
     a, b = a[mascara], b[mascara]
     if len(a) < 3:
         return float("nan")
-    ra = stats.rankdata(a)
-    rb = stats.rankdata(b)
+    ra = np.asarray(stats.rankdata(a), dtype=float)
+    rb = np.asarray(stats.rankdata(b), dtype=float)
     if np.std(ra) == 0 or np.std(rb) == 0:
         return float("nan")
     return float(np.corrcoef(ra, rb)[0, 1])
@@ -127,7 +167,9 @@ def amostrar_correlacionado(
     if not nomes:
         return {}, relatorio_base
 
-    R, indices = matriz_relacoes(nomes, relacoes.lista)
+    R, indices = matriz_relacoes(
+        nomes, relacoes.lista, completar=bool(getattr(relacoes, "completar_psd", False))
+    )
     ok, min_eig = validar_psd(R)
     if not ok:
         R = projetar_psd(R)

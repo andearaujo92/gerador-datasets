@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from gerador.schema.painel import AVISO_LINHAS, LIMITE_LINHAS, PainelConfig, normalizar_inicio
 from gerador.schema.relations import RelacoesConfig
 from gerador.schema.target import TargetConfig
-from gerador.schema.types import DType, TargetModo, TargetTipo
+from gerador.schema.types import TIPOS_COPULAVEIS, DType, TargetModo, TargetTipo
 from gerador.schema.variable import VariableConfig, validar_variavel
 
 FORMATOS_EXPORT = ["csv", "parquet", "xlsx"]
@@ -19,6 +20,7 @@ class DatasetConfig:
     variaveis: list[VariableConfig] = field(default_factory=list)
     relacoes: RelacoesConfig = field(default_factory=RelacoesConfig)
     target: TargetConfig = field(default_factory=TargetConfig)
+    painel: PainelConfig = field(default_factory=PainelConfig)
     formato_export: str = "csv"
     incluir_dicionario: bool = True
     version: int = 1
@@ -27,6 +29,14 @@ class DatasetConfig:
     @property
     def nomes(self) -> list[str]:
         return [v.nome for v in self.variaveis]
+
+    @property
+    def nomes_copulaveis(self) -> list[str]:
+        return [v.nome for v in self.variaveis if v.tipo in TIPOS_COPULAVEIS]
+
+    @property
+    def total_linhas(self) -> int:
+        return self.painel.total_linhas(self.n_linhas)
 
     def variavel(self, nome: str) -> VariableConfig | None:
         for v in self.variaveis:
@@ -46,6 +56,7 @@ class DatasetConfig:
                     "incluir_dicionario": self.incluir_dicionario,
                 },
             },
+            "painel": self.painel.to_dict(),
             "variaveis": [v.to_dict() for v in self.variaveis],
             "relacoes": self.relacoes.to_dict(),
             "target": self.target.to_dict(),
@@ -64,6 +75,7 @@ class DatasetConfig:
             variaveis=[VariableConfig.from_dict(v) for v in d.get("variaveis", [])],
             relacoes=RelacoesConfig.from_dict(d.get("relacoes")),
             target=TargetConfig.from_dict(d.get("target")),
+            painel=PainelConfig.from_dict(d.get("painel")),
         )
 
     # -- validacao -----------------------------------------------------
@@ -73,16 +85,23 @@ class DatasetConfig:
         avisos: list[str] = []
 
         if self.n_linhas < 1:
-            erros.append("numero de linhas precisa ser >= 1")
-        if self.n_linhas > 1_000_000:
-            avisos.append(f"{self.n_linhas:,} linhas exigem bastante memoria; considere reduzir")
+            erros.append("numero de linhas (entidades) precisa ser >= 1")
 
         if not self.variaveis:
             erros.append("adicione ao menos uma variavel")
 
+        total = self.total_linhas
+        if total > LIMITE_LINHAS:
+            erros.append(
+                f"{total:,} linhas no total excedem o limite de {LIMITE_LINHAS:,} — "
+                "reduza as entidades ou os meses"
+            )
+        elif total > AVISO_LINHAS:
+            avisos.append(f"{total:,} linhas exigem bastante memoria; considere reduzir")
+
         nomes: list[str] = []
         for var in self.variaveis:
-            e, a = validar_variavel(var, self.n_linhas)
+            e, a = validar_variavel(var, self.n_linhas, colunas=list(nomes))
             erros.extend(e)
             avisos.extend(a)
             nomes.append(var.nome)
@@ -95,6 +114,9 @@ class DatasetConfig:
             if self.target.nome in nomes:
                 erros.append(f"o nome do target ('{self.target.nome}') colide com uma variavel")
 
+        # -- painel
+        erros.extend(self._validar_painel(nomes))
+
         # -- relacoes
         vistos: set[tuple[str, str]] = set()
         for rel in self.relacoes.lista:
@@ -106,10 +128,15 @@ class DatasetConfig:
                     erros.append(f"relacao aponta para variavel inexistente: '{lado}'")
                 else:
                     var_lado = self.variavel(lado)
-                    if var_lado is not None and var_lado.dtype == DType.TEXTO.value:
+                    if var_lado is not None and var_lado.tipo is DType.TEXTO:
                         erros.append(
                             f"'{lado}' e do tipo texto (ID) e nao participa da matriz de "
                             "correlacao — IDs sao chaves, nao features"
+                        )
+                    if var_lado is not None and var_lado.tipo is DType.DERIVADA:
+                        erros.append(
+                            f"'{lado}' e derivada de uma expressao: a correlacao vem da formula "
+                            "e nao entra na matriz"
                         )
             if self.target.habilitado and self.target.nome in (rel.a, rel.b):
                 erros.append(
@@ -123,19 +150,26 @@ class DatasetConfig:
                 avisos.append(f"relacao duplicada {rel.a}-{rel.b}: vale a ultima")
             vistos.add(chave)
 
-        # -- matriz PSD
+        # -- matriz PSD (so variaveis copulaveis)
         if len(self.relacoes.lista) >= 2 and not erros:
-            from gerador.engine.copula import matriz_relacoes, validar_psd
+            from gerador.engine.copula import matriz_relacoes, projetar_psd, validar_psd
 
-            R, indices = matriz_relacoes(nomes, self.relacoes.lista)
+            R, indices = matriz_relacoes(self.nomes_copulaveis, self.relacoes.lista)
             ok, min_eig = validar_psd(R)
             if not ok:
-                culpados = _par_mais_inconsistente(R, indices)
-                detalhe = f" (par mais inconsistente: {culpados})" if culpados else ""
-                erros.append(
-                    "a matriz de correlacao pedida nao e valida "
-                    f"(menor autovalor {min_eig:.3f}){detalhe} — use 'projetar para matriz valida'"
-                )
+                if self.relacoes.completar_psd:
+                    avisos.append(
+                        "as correlacoes pedidas nao fecham sozinhas: os pares nao "
+                        "informados serao completados automaticamente para uma matriz valida"
+                    )
+                else:
+                    culpados = _par_mais_inconsistente(R, indices)
+                    detalhe = f" (par mais inconsistente: {culpados})" if culpados else ""
+                    erros.append(
+                        "a matriz de correlacao pedida nao e valida "
+                        f"(menor autovalor {min_eig:.3f}){detalhe} — ative "
+                        "'Completar matriz automaticamente' ou ajuste as forcas"
+                    )
 
         # -- target
         t = self.target
@@ -181,6 +215,44 @@ class DatasetConfig:
                     )
 
         return erros, avisos
+
+    def _validar_painel(self, nomes: list[str]) -> list[str]:
+        p = self.painel
+        if not p.habilitado:
+            return []
+        erros: list[str] = []
+
+        if p.n_meses < 2:
+            erros.append("painel: use ao menos 2 meses")
+        if p.n_meses > 120:
+            erros.append("painel: no maximo 120 meses")
+        try:
+            normalizar_inicio(p.data_inicio)
+        except (ValueError, TypeError):
+            erros.append(f"painel: data de inicio invalida ('{p.data_inicio}')")
+
+        if not p.coluna_id or p.coluna_id not in nomes:
+            erros.append(f"painel: a coluna de id '{p.coluna_id}' nao existe")
+        else:
+            var_id = self.variavel(p.coluna_id)
+            if var_id is not None and var_id.tipo is not DType.TEXTO:
+                erros.append(
+                    f"painel: a coluna de id '{p.coluna_id}' precisa ser do tipo texto (ID)"
+                )
+
+        tempo = (p.coluna_tempo or "").strip()
+        if not tempo:
+            erros.append("painel: informe o nome da coluna de tempo")
+        elif not tempo.replace("_", "").isalnum() or tempo[0].isdigit():
+            erros.append(f"painel: nome de coluna de tempo invalido ('{tempo}')")
+        elif tempo in nomes:
+            erros.append(f"painel: a coluna de tempo '{tempo}' colide com uma variavel")
+        elif self.target.habilitado and tempo == self.target.nome:
+            erros.append(f"painel: a coluna de tempo '{tempo}' colide com o target")
+        elif tempo == p.coluna_id:
+            erros.append("painel: coluna de tempo e coluna de id precisam ser diferentes")
+
+        return erros
 
 
 def _par_mais_inconsistente(R, indices: dict[str, int]) -> str | None:

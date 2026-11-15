@@ -13,10 +13,12 @@ from gerador.schema.types import (
     PARAMS_DEFAULT,
     ROTULOS_DISTRIBUICAO,
     ROTULOS_DTYPE,
+    ROTULOS_EVOLUCAO,
     DType,
     Distribuicao,
     MecanismoNulo,
     MetodoOutlier,
+    ModoEvolucao,
     Transformacao,
 )
 from gerador.schema.variable import VariableConfig, validar_variavel
@@ -56,7 +58,9 @@ def render_todas(config) -> None:
 
 
 def _render_variavel(var: VariableConfig, config, indice: int) -> None:
-    erros, avisos = validar_variavel(var, config.n_linhas)
+    erros, avisos = validar_variavel(
+        var, config.n_linhas, colunas=list(config.nomes[:indice])
+    )
     tipo_rotulo = ROTULOS_DTYPE.get(var.tipo, var.dtype)
     partes = [f"{indice + 1}. {var.nome or '(sem nome)'}", tipo_rotulo]
     if var.qualidade.nulos.pct > 0:
@@ -81,6 +85,7 @@ def _render_variavel(var: VariableConfig, config, indice: int) -> None:
 
             st.markdown("**Tipo & geracao**")
             _render_tipo(var)
+            _render_evolucao(var, config)
 
         with direita:
             _render_escala(var)
@@ -114,6 +119,23 @@ def _render_tipo(var: VariableConfig) -> None:
         # descarta a escolha anterior de distribuicao (pode nao valer para o novo tipo)
         st.session_state.pop(chave(var, "dist"), None)
 
+    if var.tipo is DType.DERIVADA:
+        st.caption(
+            "A expressao roda **depois** das variaveis base, na ordem da lista: "
+            "so pode usar colunas declaradas acima desta."
+        )
+        var.expressao = st.text_area(
+            "Expressao",
+            value=var.expressao,
+            key=chave(var, "expressao"),
+            help=(
+                "Ex.: (atraso_em_dias > 0) * valor_a_vencer * ruido_uniforme(0.1, 0.9). "
+                "Funcoes: log, exp, sqrt, abs, clip, minimum, maximum, ruido_uniforme(a,b), "
+                "ruido_uniforme() e operadores matematicos/comparacoes."
+            ),
+        )
+        return
+
     permitidas = DISTRIBUICOES_POR_TIPO[var.tipo]
     idx = permitidas.index(var.dist) if var.dist in permitidas else 0
     nova = st.selectbox(
@@ -128,6 +150,53 @@ def _render_tipo(var: VariableConfig) -> None:
         var.params = copy.deepcopy(PARAMS_DEFAULT[nova])
 
     _render_params(var)
+
+
+def _render_evolucao(var: VariableConfig, config) -> None:
+    """Controles temporais; so existem quando o painel esta ligado."""
+    if not config.painel.habilitado or var.tipo in (DType.TEXTO, DType.DERIVADA):
+        return
+
+    st.markdown("**Evolucao no painel**")
+    modos = list(ModoEvolucao)
+    try:
+        atual = ModoEvolucao(var.evolucao.modo)
+    except ValueError:
+        atual = ModoEvolucao.ESTATICA
+    escolhido = st.selectbox(
+        "Modo",
+        modos,
+        index=modos.index(atual),
+        format_func=lambda m: ROTULOS_EVOLUCAO[m],
+        key=chave(var, "evolucao_modo"),
+    )
+    var.evolucao.modo = escolhido.value
+
+    if escolhido is ModoEvolucao.AR1:
+        var.evolucao.phi = float(
+            st.slider(
+                "Persistencia (phi)",
+                min_value=0.0,
+                max_value=0.99,
+                value=float(min(max(var.evolucao.phi, 0.0), 0.99)),
+                step=0.01,
+                key=chave(var, "evolucao_phi"),
+                help=(
+                    "Autocorrelacao mes a mes: 0 = cada mes e um sorteio novo; "
+                    "0,9 = o cliente tende a permanecer parecido com o mes anterior."
+                ),
+            )
+        )
+    elif escolhido is ModoEvolucao.TENDENCIA:
+        var.evolucao.passo = float(
+            st.number_input(
+                "Passo por mes",
+                value=float(var.evolucao.passo),
+                step=1.0,
+                key=chave(var, "evolucao_passo"),
+                help="Quanto a variavel muda a cada mes (ex.: +1 para tempo de conta).",
+            )
+        )
 
 
 # ---------------------------------------------------------------------
@@ -171,18 +240,28 @@ def _num(var: VariableConfig, campo: str, label: str, *, minimo=None, maximo=Non
 
 def _itens(var: VariableConfig, campo_valor: str, rotulo: str) -> None:
     itens = var.params.get("itens") or []
-    base = pd.DataFrame(itens) if itens else pd.DataFrame(
-        {campo_valor: ["A", "B"], "peso": [1.0, 1.0]}
-    )
+    numerico = campo_valor == "valor"
+    if itens:
+        base = pd.DataFrame(itens)
+    elif numerico:
+        base = pd.DataFrame({campo_valor: [0.0, 1.0], "peso": [1.0, 1.0]})
+    else:
+        base = pd.DataFrame({campo_valor: ["A", "B"], "peso": [1.0, 1.0]})
     if "peso" not in base.columns:
         base["peso"] = 1.0
     base = base[[campo_valor, "peso"]]
+    if numerico:
+        base[campo_valor] = pd.to_numeric(base[campo_valor], errors="coerce").astype(float)
+        coluna_valor = st.column_config.NumberColumn(rotulo, required=True)
+    else:
+        base[campo_valor] = base[campo_valor].astype(str)
+        coluna_valor = st.column_config.TextColumn(rotulo, required=True)
     editado = st.data_editor(
         base,
         num_rows="dynamic",
         key=chave_param(var, "itens"),
         column_config={
-            campo_valor: st.column_config.TextColumn(rotulo, required=True),
+            campo_valor: coluna_valor,
             "peso": st.column_config.NumberColumn("peso", min_value=0.01, step=0.5, default=1.0),
         },
     )
@@ -191,13 +270,16 @@ def _itens(var: VariableConfig, campo_valor: str, rotulo: str) -> None:
         valor = linha[campo_valor]
         if valor is None or (isinstance(valor, float) and np.isnan(valor)):
             continue
-        texto = str(valor).strip()
-        if not texto:
-            continue
+        if numerico:
+            limpo = float(valor)
+        else:
+            limpo = str(valor).strip()
+            if not limpo:
+                continue
         peso = linha["peso"]
         if peso is None or (isinstance(peso, float) and np.isnan(peso)) or float(peso) <= 0:
             peso = 1.0
-        limpos.append({campo_valor: texto, "peso": float(peso)})
+        limpos.append({campo_valor: limpo, "peso": float(peso)})
     if limpos:
         var.params["itens"] = limpos
 

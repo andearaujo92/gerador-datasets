@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from gerador.engine import diagnostics as diag
+from gerador.schema.types import ROTULOS_EVOLUCAO, ModoEvolucao
 
 # ---------------------------------------------------------------------
 # heatmap sem dependencias (nada de matplotlib/plotly)
@@ -82,11 +83,68 @@ def render_diagnostico(config, res) -> None:
     metricas[2].metric("Tempo", f"{res.tempo_ms:.0f} ms")
     metricas[3].metric("Nulos", f"{df.isna().mean().mean() * 100:.1f}%")
 
+    _render_painel(config, res)
     _render_target(res, df)
     _render_comparativo(res)
-    _render_correlacoes(df)
+    base_corr = df
+    if res.painel and res.painel.get("coluna_tempo") in df:
+        tempo = res.painel["coluna_tempo"]
+        base_corr = df[df[tempo] == df[tempo].min()]
+    _render_correlacoes(base_corr, painel=bool(res.painel))
     _render_alertas(config, res, df)
     _render_resumos(df)
+
+
+def _render_painel(config, res) -> None:
+    info = res.painel or {}
+    if not info:
+        return
+    st.markdown("### Painel")
+    colunas = st.columns(4)
+    colunas[0].metric("Clientes", f"{int(info.get('entidades', 0)):,}".replace(",", "."))
+    colunas[1].metric("Meses", int(info.get("meses", 0)))
+    colunas[2].metric("Linhas", f"{int(info.get('linhas', 0)):,}".replace(",", "."))
+    colunas[3].metric(
+        "Janela",
+        f"{info.get('inicio', '')} → {info.get('fim', '')}" if info.get("inicio") else "—",
+    )
+    st.caption(
+        f"Uma linha por cliente por mes, com o estado do mes. "
+        f"Coluna de tempo: `{info.get('coluna_tempo', '')}`."
+    )
+
+    auto = info.get("autocorrelacao") or {}
+    if not auto:
+        return
+    por_nome = {v.nome: v for v in config.variaveis}
+    linhas = []
+    for nome, valor in auto.items():
+        var = por_nome.get(nome)
+        modo = var.evolucao.modo if var else ""
+        if modo == ModoEvolucao.AR1.value:
+            esperado: float | None = float(var.evolucao.phi)
+        elif modo in (ModoEvolucao.ESTATICA.value, ModoEvolucao.TENDENCIA.value):
+            esperado = 1.0
+        else:
+            esperado = None
+        try:
+            rotulo_modo = ROTULOS_EVOLUCAO[ModoEvolucao(modo)]
+        except (ValueError, KeyError):
+            rotulo_modo = modo or "—"
+        linhas.append(
+            {
+                "variavel": nome,
+                "modo": rotulo_modo,
+                "autocorr lag-1": round(float(valor), 3),
+                "esperado": "—" if esperado is None else round(esperado, 3),
+            }
+        )
+    st.markdown("#### Persistencia temporal")
+    st.dataframe(pd.DataFrame(linhas), hide_index=True)
+    st.caption(
+        "Spearman entre o valor do mes e o do mes anterior, dentro de cada cliente. "
+        "Estatica deve ficar em 1,0; AR1 deve ficar proximo de phi."
+    )
 
 
 def _render_target(res, df) -> None:
@@ -136,6 +194,8 @@ def _render_comparativo(res) -> None:
     if tabela is None or tabela.empty:
         return
     st.markdown("### Correlacoes: pedido vs. realizado")
+    if res.painel:
+        st.caption("Medido no primeiro mes do painel.")
     st.dataframe(tabela, hide_index=True)
 
     divergentes = tabela[tabela["status"] == "divergente"]
@@ -152,11 +212,13 @@ def _render_comparativo(res) -> None:
         )
 
 
-def _render_correlacoes(df: pd.DataFrame) -> None:
+def _render_correlacoes(df: pd.DataFrame, painel: bool = False) -> None:
     matriz = diag.matriz(df, "spearman")
     if matriz.empty:
         return
     st.markdown("### Matriz de Spearman realizada")
+    if painel:
+        st.caption("Medida no primeiro mes do painel, para refletir a cross-section pedida.")
     st.markdown(_heatmap_html(matriz), unsafe_allow_html=True)
 
 
