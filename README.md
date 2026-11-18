@@ -149,8 +149,6 @@ gerador/
   presets/              # modelos prontos (crédito mensal)
 ui/                     # state, sidebar, variable_card, relations, target_card, diagnostics
 tests/                  # 148 testes (schema, marginais, cópula, alvo, painel, presets, app)
-docs/BASE-CREDITO.md    # documentação do preset de crédito mensal
-docs/PLANO-TECNICO.md   # plano de implementação
 ```
 
 ## Desvios em relação ao plano técnico
